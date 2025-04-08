@@ -1,14 +1,20 @@
 use rust_rpc::{
     controllers::connections::handle_connection,
-    global::client_conections::init_global_client_python,
+    global::client_conections::{get_client, register_client},
     models::errors::{ServerError, ServerErrorKind},
 };
 use std::{error::Error, process};
 use tokio::{
     self,
     net::TcpListener,
+    signal,
     time::{sleep, Duration},
 };
+
+async fn shutdown_signal() {
+    signal::ctrl_c().await.expect("No se pudo escuchar ctrl+c");
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -23,9 +29,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let listener = match TcpListener::bind("0.0.0.0:5000").await {
+    let listener = match TcpListener::bind("127.0.0.1:5000").await {
         Ok(listener) => {
-            println!("Servidor escuchando en 0.0.0.0:5000");
+            println!("Servidor escuchando en 127.0.0.1:5000");
             listener
         }
         Err(err) => {
@@ -41,50 +47,56 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     tokio::spawn(reconnect_loop());
 
     loop {
-        match listener.accept().await {
-            Ok((socket, addr)) => {
-                println!("Conexión aceptada de {:?}", addr);
-                tokio::spawn(async move {
-                    if let Err(err) = handle_connection(socket).await {
-                        eprintln!("Error al manejar la conexión: {}", err);
+        tokio::select! {
+            _ = shutdown_signal() => {
+                println!("🛑 Shutdown recibido. Cerrando servidor con dignidad...");
+                break;
+            }
+
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((socket, addr)) => {
+                        println!("Conexión aceptada de {:?}", addr);
+                        tokio::spawn(async move {
+                            if let Err(err) = handle_connection(socket).await {
+                                eprintln!("Error al manejar la conexión: {}", err);
+                            }
+                        });
                     }
-                });
-            }
-            Err(err) => {
-                return Err(Box::new(ServerError::new(
-                    400,
-                    ServerErrorKind::AcceptError,
-                    &format!("Error al aceptar la conexión: {}", err),
-                    "run",
-                )))
+                    Err(err) => {
+                        eprintln!("Error al aceptar conexión: {}", err);
+                    }
+                }
             }
         }
     }
+    Ok(())
 }
 
-// Función que ejecuta la lógica de reconexión fuera del tokio::spawn
 async fn reconnect_loop() {
+    let addr = "127.0.0.1:65432";
+    let name = "python";
+
     loop {
-        let result = try_init_connection().await;
-
-        if result {
-            println!("✅ Conexión global inicializada exitosamente");
-            break;
-        } else {
-            println!("⚠️ Reintentando conexión en 10 segundos...");
-            sleep(Duration::from_secs(10)).await;
-        }
-    }
-}
-
-// Función que maneja el error sin dejar que llegue a tokio::spawn
-async fn try_init_connection() -> bool {
-    match init_global_client_python("127.0.0.1:65432").await {
-        Ok(_) => true,
-        Err(e) => {
-            // Convertimos el error a string aquí y no lo dejamos escapar
-            eprintln!("⚠️ Error al inicializar la conexión global: {}", e);
-            false
+        match get_client(name).await {
+            Some(client) => {
+                match client.ping().await {
+                    Ok(_) => {
+                        println!("✅ [{}] conexión viva", name);
+                        sleep(Duration::from_secs(10)).await;
+                    }
+                    Err(e) => {
+                        eprintln!("🔌 [{}] ping fallido: {}. Reintentando conexión...", name, e);
+                        let _ = register_client(name, addr).await;
+                        sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+            None => {
+                eprintln!("⚠️ [{}] cliente no encontrado. Intentando conexión...", name);
+                let _ = register_client(name, addr).await;
+                sleep(Duration::from_secs(5)).await;
+            }
         }
     }
 }

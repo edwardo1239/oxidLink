@@ -67,6 +67,7 @@ pub enum RequestErrorKind {
     EmptyAction,
     InvalidAction,
     InvalidJSON,
+    EOFWhileParsing,
     UnknownAction,
     InvalidData,
     MissingField(String), // Nombre del campo que falta
@@ -126,3 +127,59 @@ impl fmt::Display for RequestError {
 // Implementar el trait `Error` para permitir el manejo de errores
 impl Error for RequestError {}
 
+
+
+#[derive(Debug)]
+pub struct ClientError {
+    code: i32,
+    kind: ClientErrorKind,
+    message: String,
+    location: String,
+}
+
+#[derive(Debug)]
+pub enum ClientErrorKind {
+    ConnectionFailed,
+    WriteFailed,
+    ReadFailed,
+    InvalidResponse,
+    Disconnected,
+    Timeout,
+    Other,
+    PingFailed
+}
+
+impl ClientError {
+    pub fn new(code: i32, kind: ClientErrorKind, message: &str, location: &str) -> Self {
+        ClientError {
+            code,
+            kind,
+            message: message.to_string(),
+            location: location.to_string(),
+        }
+    }
+
+    pub fn code(&self) -> i32 {
+        self.code
+    }
+
+    pub fn kind(&self) -> &ClientErrorKind {
+        &self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+}
+
+impl fmt::Display for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error en '{}': {}", self.location, self.message)
+    }
+}
+
+impl Error for ClientError {}

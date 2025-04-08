@@ -1,23 +1,35 @@
+use std::collections::HashMap;
+
 // src/global.rs
-use std::error::Error;
-use std::sync::Arc;
-use tokio::sync::{Mutex, OnceCell};
-use crate::services::tcp_client::TcpClient;
+use crate::{models::errors::ClientErrorKind, services::client_manager::ClientManager};
+use lazy_static::lazy_static;
+use tokio::sync::RwLock;
 
-// Definimos la variable global que contendrá el cliente TCP.
-pub static GLOBAL_CLIENT_PYTHON: OnceCell<Arc<Mutex<TcpClient>>> = OnceCell::const_new();
+lazy_static! {
+    pub static ref GLOBAL_CLIENTS: RwLock<HashMap<String, ClientManager>> = RwLock::new(HashMap::new());
+}
 
-/// Inicializa la conexión global con el servidor TCP.
-/// Esta función debe llamarse una única vez, por ejemplo, al inicio de la aplicación.
-pub async fn init_global_client_python(addr: &str) -> Result<(), Box<dyn Error>> {
-    let client = TcpClient::connect(addr).await?;
-    GLOBAL_CLIENT_PYTHON
-        .set(Arc::new(Mutex::new(client)))
-        .map_err(|_| "El cliente global ya ha sido inicializado")?;
+use crate::models::errors::ClientError;
+
+pub async fn register_client(name: &str, addr: &str) -> Result<(), ClientError> {
+    let manager = match ClientManager::new(addr).await {
+        Ok(m) => m,
+        Err(e) => {
+            return Err(ClientError::new(
+                500,
+                ClientErrorKind::ConnectionFailed,
+                &format!("Error creando cliente '{}': {}", name, e),
+                "global::register_client",
+            ))
+        }
+    };
+
+    let mut map = GLOBAL_CLIENTS.write().await;
+    map.insert(name.to_string(), manager);
     Ok(())
 }
 
-/// Retorna una copia de la referencia al cliente global, si ya fue inicializado.
-pub fn get_global_client_python() -> Option<Arc<Mutex<TcpClient>>> {
-    GLOBAL_CLIENT_PYTHON.get().cloned()
+pub async fn get_client(name: &str) -> Option<ClientManager> {
+    let map = GLOBAL_CLIENTS.read().await;
+    map.get(name).cloned()
 }

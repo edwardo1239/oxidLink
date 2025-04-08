@@ -1,4 +1,3 @@
-
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -6,11 +5,12 @@ use tokio::{
 
 use crate::{
     controllers::handle_request::{handle_request_server, serde_request},
-    models::errors::{ServerError, ServerErrorKind},
+    models::errors::{RequestErrorKind, ServerError, ServerErrorKind},
 };
 
 pub async fn handle_connection(mut socket: TcpStream) -> Result<(), ServerError> {
     let mut buf = [0; 1024];
+    let mut accumulator = String::new();
 
     loop {
         let n = match socket.read(&mut buf).await {
@@ -31,19 +31,24 @@ pub async fn handle_connection(mut socket: TcpStream) -> Result<(), ServerError>
             return Ok(());
         }
 
-        let request = String::from_utf8_lossy(&buf[..n]);
+        let new_chunk = String::from_utf8_lossy(&buf[..n]);
+        accumulator.push_str(&new_chunk);
 
-        match serde_request(&request).await {
+        println!("Recibido: {}", accumulator);
+        match serde_request(&accumulator).await {
             Ok(request) => {
                 let response = match handle_request_server(request).await {
                     Ok(data) => data,
-                    Err(err) => return Err(ServerError::new(
-                        err.code().clone(), 
-                        ServerErrorKind::InvalidRequest, 
-                        &format!("{:?} => {}", err.kind(), err.message()), 
-                        err.location(),
-                    ))
+                    Err(err) => {
+                        return Err(ServerError::new(
+                            err.code().clone(),
+                            ServerErrorKind::InvalidRequest,
+                            &format!("{:?} => {}", err.kind(), err.message()),
+                            err.location(),
+                        ))
+                    }
                 };
+                accumulator.clear();
                 match socket.write_all(response.as_bytes()).await {
                     Ok(_) => {
                         // Flush para asegurar que se envíe completamente
@@ -74,6 +79,12 @@ pub async fn handle_connection(mut socket: TcpStream) -> Result<(), ServerError>
                 }
             }
             Err(err) => {
+                // Detectar si es "EOFWhileParsing" (incompleto)
+                if matches!(err.kind(), RequestErrorKind::EOFWhileParsing) {
+                    // JSON incompleto => solo seguir leyendo, sin enviar error
+                    continue;
+                }
+
                 let error_response = serde_json::json!({
                     "error": true,
                     "code": err.code(),
